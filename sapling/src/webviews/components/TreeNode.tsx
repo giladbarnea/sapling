@@ -34,6 +34,7 @@ const TreeNode = ({ node }: any) => {
       }
     });
     // Send message to the extension for the bolding
+    // @ts-ignore
     tsvscode.postMessage({
       type: "onBoldCheck",
       value: null
@@ -44,6 +45,7 @@ const TreeNode = ({ node }: any) => {
   const viewFile = () => {
     // Edge case to verify that there is in fact a file path for the current node
     if (node.filePath) {
+      // @ts-ignore
       tsvscode.postMessage({
         type: "onViewFile",
         value: node.filePath
@@ -75,6 +77,7 @@ const TreeNode = ({ node }: any) => {
     const newExpanded = !expanded;
     setExpanded(newExpanded);
     // Send a message to the extension on the changed checked value of the current node
+    // @ts-ignore
     tsvscode.postMessage({
         type: "onNodeToggle",
         value: {id: node.id, expanded: newExpanded}
@@ -82,6 +85,31 @@ const TreeNode = ({ node }: any) => {
   };
 
   const classString = "tree_label" + (node.error ? " node_error" : "");
+
+  // Function that generates the rendering parents list
+  const renderParentsList = () => {
+    // Only show rendering parents for the root node (depth === 0)
+    if (node.depth !== 0 || !node.renderingParents || node.renderingParents.length === 0) {
+      return null;
+    }
+    
+    return (
+      <div className="rendering-parents error-text">
+        <h4>Parents of {node.name}:</h4>
+        {node.renderingParents.length === 0 ? (
+          <small>No components found that render {node.name}</small>
+        ) : (
+          <ul>
+            {node.renderingParents.map(parent => (
+              <li key={parent.id}>
+                <small>{parent.name}</small>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  };
 
   // Render section
   return (
@@ -108,6 +136,7 @@ const TreeNode = ({ node }: any) => {
               <a className="node_icons" href="" onClick={viewFile}><FontAwesomeIcon icon={faArrowCircleRight} /></a>
             </Fragment>
           ): null}
+          {renderParentsList()}
           <Tree data={node.children} first={false} />
         </li>
       ):
@@ -131,6 +160,7 @@ const TreeNode = ({ node }: any) => {
               <a className="node_icons" href="" onClick={viewFile}><FontAwesomeIcon icon={faArrowCircleRight} /></a>
             </Fragment>
           ): null}
+          {renderParentsList()}
         </li>
       }
     </>

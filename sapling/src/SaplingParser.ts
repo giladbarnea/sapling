@@ -2,13 +2,16 @@ import * as babelParser from '@babel/parser';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getNonce } from "./getNonce";
-import { Tree } from './types/Tree';
+import { Tree, ParentInfo } from './types/Tree';
 import { ImportObj } from './types/ImportObj';
 import { File } from '@babel/types';
+import traverse from '@babel/traverse';
 
 export class SaplingParser {
   entryFile: string;
   tree: Tree | undefined;
+  componentMap: Map<string, Tree>; // Map to track all components by filepath
+  workspaceRoot: string;
 
   constructor(filePath: string) {
     // Fix when selecting files in wsl file system
@@ -23,6 +26,8 @@ export class SaplingParser {
     }
 
     this.tree = undefined;
+    this.componentMap = new Map();
+    this.workspaceRoot = path.dirname(this.entryFile);
     // Break down and reasemble given filePath safely for any OS using path?
   }
 
@@ -43,11 +48,13 @@ export class SaplingParser {
       reduxConnect: false,
       children: [],
       parentList: [],
+      renderingParents: this.findRootParents(), // Find parents of root component
       props: {},
       error: ''
     };
 
     this.tree = root;
+    this.componentMap.set(root.filePath, root);
     this.parser(root);
     return this.tree;
   }
@@ -281,12 +288,13 @@ export class SaplingParser {
       children[astToken.value].count += 1;
       children[astToken.value].props = {...children[astToken.value].props, ...props};
     } else {
+      const childFilePath = path.resolve(path.dirname(parent.filePath), imports[astToken.value]['importPath']);
       // Add tree node to childNodes if one does not exist
       children[astToken.value] = {
         id: getNonce(),
         name: imports[astToken.value]['importName'],
         fileName: path.basename(imports[astToken.value]['importPath']),
-        filePath: path.resolve(path.dirname(parent.filePath), imports[astToken.value]['importPath']),
+        filePath: childFilePath,
         importPath: imports[astToken.value]['importPath'],
         expanded: false,
         depth: parent.depth + 1,
@@ -297,8 +305,22 @@ export class SaplingParser {
         props: props,
         children: [],
         parentList: [parent.filePath].concat(parent.parentList),
+        renderingParents: [],
         error: '',
       };
+
+      // Track the new component in our map
+      this.componentMap.set(childFilePath, children[astToken.value]);
+    }
+
+    // Add this parent as a rendering parent
+    const childComponent = this.componentMap.get(path.resolve(path.dirname(parent.filePath), imports[astToken.value]['importPath']));
+    if (childComponent && !childComponent.renderingParents.some(p => p.id === parent.id)) {
+      childComponent.renderingParents.push({
+        id: parent.id,
+        name: parent.name,
+        filePath: parent.filePath
+      });
     }
 
     return children;
@@ -339,5 +361,74 @@ export class SaplingParser {
       }
     }
     return false;
+  }
+
+  // Find all components in the workspace that render the root component
+  private findRootParents(): ParentInfo[] {
+    const rootName = path.basename(this.entryFile).replace(/\.(t|j)sx?$/, '');
+    const parents: ParentInfo[] = [];
+    
+    // Recursively search for files
+    const searchDir = (dir: string) => {
+      const files = fs.readdirSync(dir);
+      
+      for (const file of files) {
+        const fullPath = path.join(dir, file);
+        const stat = fs.statSync(fullPath);
+        
+        if (stat.isDirectory() && !fullPath.includes('node_modules')) {
+          searchDir(fullPath);
+        } else if (/\.(t|j)sx?$/.test(file)) {
+          try {
+            const content = fs.readFileSync(fullPath, 'utf-8');
+            const ast = babelParser.parse(content, {
+              sourceType: 'module',
+              plugins: ['jsx', 'typescript'],
+            });
+            
+            // Check if file imports the root component
+            let importsRoot = false;
+            let importPath = '';
+            
+            // Find import statement for root component
+            traverse(ast, {
+              ImportDeclaration(path) {
+                path.node.specifiers.forEach(spec => {
+                  if (spec.local.name === rootName) {
+                    importsRoot = true;
+                    importPath = path.node.source.value;
+                  }
+                });
+              }
+            });
+            
+            // If file imports root component, check if it renders it
+            if (importsRoot) {
+              let rendersRoot = false;
+              traverse(ast, {
+                JSXElement(path) {
+                  if (path.node.openingElement.name.name === rootName) {
+                    rendersRoot = true;
+                  }
+                }
+              });
+              
+              if (rendersRoot) {
+                parents.push({
+                  id: getNonce(),
+                  name: path.basename(file).replace(/\.(t|j)sx?$/, ''),
+                  filePath: fullPath
+                });
+              }
+            }
+          } catch (err) {
+            // Skip files that can't be parsed
+          }
+        }
+      }
+    };
+    
+    searchDir(this.workspaceRoot);
+    return parents;
   }
 }
